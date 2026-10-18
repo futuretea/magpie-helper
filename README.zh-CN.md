@@ -163,3 +163,7 @@ python3 -m unittest discover -s tests -v
 测试使用临时目录并替换主机操作，不安装软件、不修改真实服务、不申请公网证书。Ubuntu 主机完整安装和 Let's Encrypt 签发需要真实目标环境，应另行验证。
 
 依据：[Magpie 部署参考](https://github.com/yetone/magpie/blob/main/docs/reference.md#docker)、[官方发布包](https://github.com/yetone/magpie-releases/releases)、[Let's Encrypt 的 IP 证书与 Certbot 说明](https://letsencrypt.org/2026/03/11/shorter-certs-certbot/)。
+
+## 许可证
+
+[MIT](LICENSE)

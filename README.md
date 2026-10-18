@@ -161,3 +161,7 @@ python3 -m unittest discover -s tests -v
 Tests use temporary directories and replace host operations. They do not install packages, change a real service, or request a public certificate. Production Ubuntu installation and Let's Encrypt issuance require a real target host and remain separate checks.
 
 References: [Magpie deployment reference](https://github.com/yetone/magpie/blob/main/docs/reference.md#docker), [official releases](https://github.com/yetone/magpie-releases/releases), [Let's Encrypt IP certificates and Certbot](https://letsencrypt.org/2026/03/11/shorter-certs-certbot/).
+
+## License
+
+[MIT](LICENSE)
