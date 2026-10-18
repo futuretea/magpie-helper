@@ -47,6 +47,10 @@ parse_args() {
 validate_host() {
   [[ $EUID -eq 0 ]] || die 'Run as root on the target host.'
   [[ "$(ps -p 1 -o comm= | tr -d ' ')" == systemd ]] || die 'A running systemd host is required.'
+  check_ownership
+}
+
+check_ownership() {
   local file found=false
   for file in "$service_path" "${config_dir}/service.env"; do
     if [[ -e "$file" ]]; then
@@ -58,14 +62,14 @@ validate_host() {
 }
 
 print_plan() {
-  printf 'Remove service: %s\nRemove binary: %s\nRemove renewal hook: %s\n' \
-    "$service_path" "$binary_path" "$hook_path"
+  printf 'Remove service: %s\nRemove binary: %s\n' "$service_path" "$binary_path"
+  [[ ! -e "$hook_path" ]] || printf 'Remove renewal hook: %s\n' "$hook_path"
   if [[ "$purge" == true ]]; then
     printf 'Permanently delete: %s, %s, user/group %s\n' "$config_dir" "$state_dir" "$service_user"
   else
     printf 'Preserve: %s, %s, and user/group %s\n' "$config_dir" "$state_dir" "$service_user"
   fi
-  printf 'Preserve: Certbot, renewal timer, and all /etc/letsencrypt certificates.\n'
+  printf 'Preserve: Certbot, its renewal timer, and all /etc/letsencrypt certificates, if present.\n'
 }
 
 confirm_uninstall() {
@@ -73,7 +77,7 @@ confirm_uninstall() {
   [[ -t 0 && -t 1 ]] || { printf 'Non-interactive uninstall requires --yes.\n' >&2; exit 2; }
   local answer
   printf 'Type "uninstall" to confirm the targets above: ' >&2
-  read -r answer
+  read -r answer || answer=''
   [[ "$answer" == uninstall ]] || { printf 'Cancelled.\n' >&2; exit 3; }
 }
 

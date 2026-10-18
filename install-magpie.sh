@@ -26,7 +26,8 @@ usage_error() { log "ERROR: $*"; usage >&2; exit 2; }
 
 usage() {
   cat <<'EOF'
-Install Magpie on Ubuntu with systemd and an IP HTTPS certificate.
+Install Magpie on Ubuntu with systemd, either on a public IP with an HTTPS
+certificate or on loopback only behind a local proxy.
 
 Usage: install-magpie.sh --ip <public-ipv4> [options]
        install-magpie.sh --local-only [options]
@@ -104,6 +105,10 @@ validate_host() {
   [[ "$(ps -p 1 -o comm= | tr -d ' ')" == systemd ]] || die "A running systemd host is required."
   [[ "$(sed -n 's/^ID=//p' /etc/os-release | tr -d '\"')" == ubuntu ]] || die "Only Ubuntu is supported."
   case "$(uname -m)" in x86_64|aarch64|arm64) ;; *) die "Only amd64 and arm64 are supported." ;; esac
+  check_ownership
+}
+
+check_ownership() {
   if [[ -e "$service_path" || -e "${config_dir}/service.env" ]]; then
     local file
     for file in "$service_path" "${config_dir}/service.env"; do

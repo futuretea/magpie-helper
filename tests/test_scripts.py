@@ -1,12 +1,15 @@
 """Exercise the scripts in a temporary filesystem, without host mutations."""
 
 import hashlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import pty
 import shlex
 import subprocess
 import tempfile
+import threading
 import unittest
 
 
@@ -28,6 +31,14 @@ class ScriptTests(unittest.TestCase):
             path.mkdir(parents=True)
 
     def run_script(self, script, body):
+        environment = dict(os.environ)
+        environment.pop("MAGPIE_VERSION", None)
+        environment.pop("ACME_EMAIL", None)
+        # Tests must never accidentally execute a script under an elevated identity.
+        return subprocess.run(["bash", "-c", self.script_command(script, body)],
+                              text=True, capture_output=True, env=environment)
+
+    def script_command(self, script, body):
         paths = {
             "config_dir": self.config,
             "state_dir": self.state,
@@ -38,7 +49,7 @@ class ScriptTests(unittest.TestCase):
             "fixture_root": self.root,
         }
         setup = "\n".join(f"{key}={shlex.quote(str(value))}" for key, value in paths.items())
-        shell = f"source {shlex.quote(str(ROOT / script))}\n{setup}\n" + r'''
+        return f"source {shlex.quote(str(ROOT / script))}\n{setup}\n" + r'''
 install() {
   local -a args=()
   while (($#)); do
@@ -64,11 +75,6 @@ validate_network() { :; }
 provision_certificate() { :; }
 verify_installation() { :; }
 ''' + body
-        environment = dict(os.environ)
-        environment.pop("MAGPIE_VERSION", None)
-        environment.pop("ACME_EMAIL", None)
-        # Tests must never accidentally execute a script under an elevated identity.
-        return subprocess.run(["bash", "-c", shell], text=True, capture_output=True, env=environment)
 
     def install(self, arguments="", target="--ip 203.0.113.10"):
         return self.run_script("install-magpie.sh", r'''
@@ -92,6 +98,133 @@ main ''' + target + " " + arguments)
                 result = subprocess.run(["bash", "-s", "--", "--help"], stdin=source, capture_output=True, text=True)
             self.assert_success(result)
             self.assertIn("Usage:", result.stdout)
+            self.assertIn("--purge" if script.startswith("un") else "--local-only", result.stdout)
+
+    def check_ownership(self, script):
+        return self.run_script(script, "check_ownership")
+
+    def test_installer_refuses_unmanaged_or_leftover_files(self):
+        self.assert_success(self.check_ownership("install-magpie.sh"))
+        self.binary.write_text("leftover")
+        self.assertEqual(self.check_ownership("install-magpie.sh").returncode, 1)
+        self.binary.unlink()
+        self.config.mkdir(parents=True)
+        (self.config / "service.env").write_text("MAGPIE_WEB_KEY=foreign\n")
+        result = self.check_ownership("install-magpie.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Unmanaged installation", result.stderr)
+        (self.config / "service.env").write_text("# Managed by install-magpie.sh.\n")
+        self.assert_success(self.check_ownership("install-magpie.sh"))
+        self.unit.write_text("[Unit]\n")
+        self.assertEqual(self.check_ownership("install-magpie.sh").returncode, 1)
+        self.assertEqual((self.config / "service.env").read_text(), "# Managed by install-magpie.sh.\n")
+
+    def test_uninstaller_refuses_unmanaged_or_missing_installation(self):
+        result = self.check_ownership("uninstall-magpie.sh")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("No installation", result.stderr)
+        self.unit.write_text("[Unit]\n")
+        self.assertEqual(self.check_ownership("uninstall-magpie.sh").returncode, 1)
+        self.assertTrue(self.unit.exists())
+        self.unit.write_text("# Managed by install-magpie.sh.\n")
+        self.assert_success(self.check_ownership("uninstall-magpie.sh"))
+
+    def test_local_only_dependencies_skip_snapd_and_certbot(self):
+        result = self.run_script("install-magpie.sh", r'''
+unset -f install_dependencies
+source "$script"
+apt-get() { printf 'apt-get %s\n' "$*" >>"$calls"; }
+snap() { printf 'snap %s\n' "$*" >>"$calls"; }
+timeout() { printf 'timeout %s\n' "$*" >>"$calls"; }
+local_only=true
+install_dependencies
+'''.replace("$script", shlex.quote(str(ROOT / "install-magpie.sh"))))
+        self.assert_success(result)
+        calls = self.calls.read_text()
+        self.assertIn("apt-get install", calls)
+        for forbidden in ("snapd", "snap ", "certbot", "timeout"):
+            self.assertNotIn(forbidden, calls)
+
+    def test_local_only_verification_uses_trusted_forwarded_loopback_requests(self):
+        web_key = "fixture-web-key"
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/v1/models":
+                    status = 200 if self.headers.get("X-Forwarded-For") else 403
+                elif self.path == "/api/state":
+                    port = self.server.server_address[1]
+                    status = 200 if self.headers.get("Cookie") == f"magpie_web_{port}={web_key}" else 401
+                else:
+                    status = 404
+                self.send_response(status)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        self.config.mkdir(parents=True)
+        (self.config / "service.env").write_text(f"MAGPIE_WEB_KEY={web_key}\n")
+        body = r'''
+unset -f verify_installation
+source "$script"
+curl() { printf 'curl %s\n' "$*" >>"$calls"; }
+local_only=true
+public_ip=203.0.113.10
+gateway_port=PORT
+web_addr=127.0.0.1:PORT
+created_client_key=true
+verify_installation
+'''.replace("$script", shlex.quote(str(ROOT / "install-magpie.sh"))).replace("PORT", str(port))
+        # Re-sourcing resets the script's paths, so restore the fixture configuration.
+        result = self.run_script("install-magpie.sh", body.replace(
+            "curl()", f"config_dir={shlex.quote(str(self.config))}\ncurl()"))
+        self.assert_success(result)
+        self.assertIn("Verified gateway access", result.stdout)
+        self.assertIn(f"http://127.0.0.1:{port}/v1/models", self.calls.read_text())
+        self.assertNotIn("203.0.113.10", self.calls.read_text())
+
+    def test_uninstall_requires_typed_confirmation(self):
+        self.assert_success(self.install())
+        for answer in (b"yes\n", b"\x04"):
+            body = self.script_command("uninstall-magpie.sh", "main")
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.execvpe("bash", ["bash", "-c", body], os.environ)
+            output = b""
+            os.write(fd, answer)
+            while True:
+                try:
+                    chunk = os.read(fd, 1024)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output += chunk
+            _, status = os.waitpid(pid, 0)
+            os.close(fd)
+            self.assertEqual(os.waitstatus_to_exitcode(status), 3, output.decode())
+            self.assertIn(b"Cancelled.", output)
+            self.assertTrue(self.unit.exists())
+
+    def test_purge_refuses_symlinked_data_directory(self):
+        self.assert_success(self.install())
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "sentinel").write_text("keep")
+        real_state = self.root / "real-state"
+        self.state.rename(real_state)
+        self.state.symlink_to(outside, target_is_directory=True)
+        result = self.run_script("uninstall-magpie.sh", "main --yes --purge")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Refusing to delete a symlink", result.stderr)
+        self.assertEqual((outside / "sentinel").read_text(), "keep")
+        self.assertNotIn("userdel", self.calls.read_text() if self.calls.exists() else "")
 
     def test_invalid_options_stop_before_host_operations(self):
         cases = (
