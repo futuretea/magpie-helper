@@ -37,6 +37,16 @@ Open `http://127.0.0.1:3430`. Retrieve the management key **privately** from `/e
 
 Add providers and accounts in the browser. For a subscription sign-in that redirects to localhost on your computer, copy the browser's final callback URL into Magpie's **Callback URL** field.
 
+You can also use the Magpie CLI on the server. Run it as the service user with the service's HOME and XDG directories, so it writes the same settings the service reads. For example, a GitHub Copilot subscription uses a device code printed in the terminal:
+
+```bash
+sudo runuser -u magpie -- env $(sudo grep -E '^(HOME|XDG_[A-Z_]+)=' /etc/magpie/service.env) \
+  /usr/local/bin/magpie accounts add copilot
+sudo systemctl restart magpie
+```
+
+Use `magpie provider add <preset> <key>` the same way for API-key providers. The running service does not load providers or accounts added by the CLI until it restarts.
+
 ### Use as a CLIProxyAPI upstream
 
 When `cliproxyapi-helper` already serves TCP `443` on the same host, install Magpie with `--local-only` so clients keep using CLIProxyAPI and Magpie stays private: `client → CLIProxyAPI (https://<ip>/v1) → Magpie (http://127.0.0.1:3425/v1)`.
@@ -47,18 +57,21 @@ ssh root@203.0.113.10 'bash -s -- --local-only' < ./install-magpie.sh
 
 This mode needs neither `--ip` nor ports `80`/`443`, requests no certificate, and installs no Certbot. The model API listens only on `127.0.0.1:3425` over plain HTTP; management stays on `127.0.0.1:3430` via the SSH tunnel above. It sets `MAGPIE_TRUST_PROXY=1`, so requests CLIProxyAPI forwards over loopback are served as local ones even when they carry a forwarding header; CLIProxyAPI authenticates its own clients. Any local process can call this loopback API, as with any default Magpie install. `--local-only` cannot be combined with `--ip` or `--enable-remote-management`; running it over a public install returns management to loopback, while the old certificate lineage and its renewal remain until removed with Certbot.
 
-The helper does not edit CLIProxyAPI. After adding providers in Magpie, list its model names on the server with `curl -s http://127.0.0.1:3425/v1/models`, then add an entry in the CLIProxyAPI management page or `config.yaml`:
+The helper does not edit CLIProxyAPI. After adding providers in Magpie, list its model names on the server with `curl -s http://127.0.0.1:3425/v1/models`, then add an entry in the CLIProxyAPI management page or `config.yaml`. With `config-version: 8`, the group belongs under `api-keys`:
 
 ```yaml
-openai-compatibility:
-  - name: "magpie"
-    base-url: "http://127.0.0.1:3425/v1"
-    keys:
-      - api-key: "<contents of /etc/magpie/client.key>"
-    models:
-      - name: "<model name from Magpie>"
-        alias: "<name clients will request>"
+api-keys:
+  openai-compatibility:
+    - name: "magpie"
+      base-url: "http://127.0.0.1:3425/v1"
+      keys:
+        - api-key: "<contents of /etc/magpie/client.key>"
+      models:
+        - name: "copilot/gpt-5.5"           # model name from Magpie
+          alias: "copilot/gpt-5.5"          # name clients will request
 ```
+
+Older configs without `config-version: 8` put `openai-compatibility` at the top level. To namespace models, write the full name in each `alias` rather than setting `prefix`: CLIProxyAPI still publishes the unprefixed aliases alongside the prefixed ones, and those can collide with models from other upstreams. CLIProxyAPI reloads `config.yaml` automatically.
 
 Magpie accepts any token on loopback, but the initial gateway key attributes usage to a named identity. Clients keep CLIProxyAPI's base URL and API key.
 

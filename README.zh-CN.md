@@ -37,6 +37,16 @@ ssh -N -L 3430:127.0.0.1:3430 root@203.0.113.10
 
 随后在页面中添加供应商、登录订阅。若订阅登录后跳转到了自己电脑的 localhost 页面，将浏览器最终地址复制到 Magpie 的 **Callback URL** 输入框完成登录。
 
+也可以在服务器上用 Magpie CLI 添加。需以服务用户身份、并带上服务的 HOME 与 XDG 目录运行，才能写入服务读取的同一份配置。例如 GitHub Copilot 订阅会在终端打印设备验证码：
+
+```bash
+sudo runuser -u magpie -- env $(sudo grep -E '^(HOME|XDG_[A-Z_]+)=' /etc/magpie/service.env) \
+  /usr/local/bin/magpie accounts add copilot
+sudo systemctl restart magpie
+```
+
+API key 类供应商用同样方式运行 `magpie provider add <preset> <key>`。CLI 添加的供应商和账号要等服务重启后才会加载。
+
 ### 作为 CLIProxyAPI 的上游
 
 同一台服务器的 TCP `443` 已由 `cliproxyapi-helper` 部署的 CLIProxyAPI 占用时，用 `--local-only` 安装 Magpie。客户端仍然只连接 CLIProxyAPI，Magpie 不对外开放：`client → CLIProxyAPI (https://<ip>/v1) → Magpie (http://127.0.0.1:3425/v1)`。
@@ -47,18 +57,21 @@ ssh root@203.0.113.10 'bash -s -- --local-only' < ./install-magpie.sh
 
 该模式不需要 `--ip`，不占用 `80`/`443`，不申请证书，也不安装 Certbot。模型接口只以 HTTP 监听 `127.0.0.1:3425`；管理页仍在 `127.0.0.1:3430`，按上文通过 SSH 隧道访问。安装器会设置 `MAGPIE_TRUST_PROXY=1`，因此即使 CLIProxyAPI 经本机转发的请求带有转发头，也按本机请求处理；客户端鉴权由 CLIProxyAPI 负责。和 Magpie 默认安装一样，本机任何进程都能调用这个回环接口。`--local-only` 不能与 `--ip` 或 `--enable-remote-management` 同用；在公网模式的安装上改用该模式时，管理页回到仅本机访问，原有证书及其续期保留，需要时自行用 Certbot 删除。
 
-helper 不修改 CLIProxyAPI。在 Magpie 中添加供应商后，于服务器上运行 `curl -s http://127.0.0.1:3425/v1/models` 查看模型名，再在 CLIProxyAPI 管理页或 `config.yaml` 中添加：
+helper 不修改 CLIProxyAPI。在 Magpie 中添加供应商后，于服务器上运行 `curl -s http://127.0.0.1:3425/v1/models` 查看模型名，再在 CLIProxyAPI 管理页或 `config.yaml` 中添加。`config-version: 8` 的配置需放在 `api-keys` 下：
 
 ```yaml
-openai-compatibility:
-  - name: "magpie"
-    base-url: "http://127.0.0.1:3425/v1"
-    keys:
-      - api-key: "<内容取自 /etc/magpie/client.key>"
-    models:
-      - name: "<Magpie 中的模型名>"
-        alias: "<客户端请求时使用的名称>"
+api-keys:
+  openai-compatibility:
+    - name: "magpie"
+      base-url: "http://127.0.0.1:3425/v1"
+      keys:
+        - api-key: "<内容取自 /etc/magpie/client.key>"
+      models:
+        - name: "copilot/gpt-5.5"           # Magpie 中的模型名
+          alias: "copilot/gpt-5.5"          # 客户端请求时使用的名称
 ```
+
+没有 `config-version: 8` 的旧配置把 `openai-compatibility` 放在顶层。想给模型加命名前缀时，直接在每个 `alias` 中写完整名称，不要设置 `prefix`：CLIProxyAPI 仍会同时公布不带前缀的别名，可能与其他上游的模型重名。CLIProxyAPI 会自动重新加载 `config.yaml`。
 
 Magpie 在本机回环上接受任意令牌，但使用初始网关密钥可以把用量归到具名身份。客户端继续使用 CLIProxyAPI 原来的地址和 API key。
 
