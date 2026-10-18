@@ -9,7 +9,7 @@ Install [Magpie](https://github.com/yetone/magpie) on an Ubuntu server with a pu
 - Ubuntu with systemd, root access, and an `amd64` or `arm64` CPU.
 - A public IPv4 assigned directly to the host. NAT-only hosts and domain certificates are outside this installer's scope.
 - Ports `80` and `443` free. Public TCP port `80` must remain reachable for certificate issuance and renewal; TCP `443` serves the model API. [`--local-only`](#use-as-a-cliproxyapi-upstream) needs no public address or certificate ports.
-- Access to GitHub, Ubuntu package repositories, Snap Store, and Let's Encrypt.
+- Access to GitHub, Ubuntu package repositories, Snap Store, and Let's Encrypt; `--local-only` needs only GitHub and Ubuntu package repositories.
 
 The management page uses a separate port, `3430`, bound to `127.0.0.1` by default. The scripts do not change firewalls or cloud security groups.
 
@@ -23,7 +23,7 @@ ssh root@203.0.113.10 'bash -s -- --ip 203.0.113.10' < ./install-magpie.sh
 
 The installer downloads the terminal-only Magpie release, verifies the asset's SHA256 against the official GitHub release metadata, creates the `magpie` system user, requests an IP HTTPS certificate with Certbot, and starts `magpie.service`. The default version is pinned to `v0.1.1268`.
 
-The final checks verify HTTPS, rejection of unauthenticated model API and management requests, successful management authentication, initial client-key authentication on a fresh install, and a Certbot renewal dry run. A failed installation exits nonzero and leaves its diagnostics visible; it does not automatically undo partial changes.
+The final checks verify HTTPS, rejection of unauthenticated model API and management requests, successful management authentication, initial client-key authentication on a fresh install, and a Certbot renewal dry run. With `--local-only`, they instead verify that a forwarded loopback request reaches the model API and that management rejects unauthenticated requests and accepts the management key. A failed installation exits nonzero and leaves its diagnostics visible; it does not automatically undo partial changes.
 
 ### Manage through SSH
 
@@ -116,8 +116,8 @@ The unit discards standard output because Magpie's startup banner includes a man
 | `/etc/magpie/client.key` | Root-only copy of the initial gateway key, if created |
 | `/etc/magpie/tls/` | Certificate copies readable by the service (unused with `--local-only`) |
 | `/var/lib/magpie/` | Private HOME, provider accounts, settings, cache, data, and state |
-| `/etc/letsencrypt/live/magpie-<ip>/` | Certbot-owned certificate lineage |
-| `/etc/letsencrypt/renewal-hooks/deploy/50-magpie` | Copy renewed certificates into the service directory |
+| `/etc/letsencrypt/live/magpie-<ip>/` | Certbot-owned certificate lineage (not created with `--local-only`) |
+| `/etc/letsencrypt/renewal-hooks/deploy/50-magpie` | Copy renewed certificates into the service directory (not created with `--local-only`) |
 
 ## Uninstall
 

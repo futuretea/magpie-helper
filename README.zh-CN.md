@@ -9,7 +9,7 @@
 - Ubuntu，使用 systemd；具有 root 权限；CPU 为 `amd64` 或 `arm64`。
 - 公网 IPv4 直接绑定在服务器网卡上；不支持仅通过 NAT 映射的主机和域名证书。
 - 本机端口 `80`、`443` 空闲。公网 TCP `80` 必须持续可达，用于申请和续期证书；TCP `443` 提供模型接口。[`--local-only`](#作为-cliproxyapi-的上游) 模式不需要公网地址和证书端口。
-- 可以访问 GitHub、Ubuntu 软件源、Snap Store 和 Let's Encrypt。
+- 可以访问 GitHub、Ubuntu 软件源、Snap Store 和 Let's Encrypt；`--local-only` 只需要 GitHub 和 Ubuntu 软件源。
 
 管理页独立使用 `3430` 端口，默认只监听 `127.0.0.1`。脚本不会修改主机防火墙、云防火墙或安全组。
 
@@ -23,7 +23,7 @@ ssh root@203.0.113.10 'bash -s -- --ip 203.0.113.10' < ./install-magpie.sh
 
 安装器默认下载固定版本 `v0.1.1268` 的无桌面二进制，通过官方 GitHub 发布信息中的 SHA256 校验后安装；创建专用系统用户 `magpie`，用 Certbot 申请 IP HTTPS 证书，启动并启用开机自启的 `magpie.service`。
 
-安装结束前检查 HTTPS、模型接口和管理页拒绝未认证请求、管理密钥可以登录、新装的客户端密钥可以访问模型列表，并执行证书续期预演。任何检查失败均以非零状态退出；不会自动撤销已经完成的安装步骤。
+安装结束前检查 HTTPS、模型接口和管理页拒绝未认证请求、管理密钥可以登录、新装的客户端密钥可以访问模型列表，并执行证书续期预演。`--local-only` 模式改为检查：带转发头的本机请求能访问模型接口，管理页拒绝未认证请求并接受管理密钥。任何检查失败均以非零状态退出；不会自动撤销已经完成的安装步骤。
 
 ### 通过 SSH 管理
 
@@ -118,8 +118,8 @@ Magpie 的启动输出包含管理登录链接，因此服务丢弃标准输出�
 | `/etc/magpie/client.key` | 初始客户端密钥的仅 root 可读副本，如有生成 |
 | `/etc/magpie/tls/` | 服务可读取的证书副本（`--local-only` 不使用） |
 | `/var/lib/magpie/` | 私有 HOME、账号、配置、缓存、数据和状态 |
-| `/etc/letsencrypt/live/magpie-<ip>/` | Certbot 管理的证书 |
-| `/etc/letsencrypt/renewal-hooks/deploy/50-magpie` | 证书续期后复制证书的脚本 |
+| `/etc/letsencrypt/live/magpie-<ip>/` | Certbot 管理的证书（`--local-only` 不创建） |
+| `/etc/letsencrypt/renewal-hooks/deploy/50-magpie` | 证书续期后复制证书的脚本（`--local-only` 不创建） |
 
 ## 卸载
 
