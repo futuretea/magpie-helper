@@ -45,7 +45,7 @@ sudo runuser -u magpie -- env $(sudo grep -E '^(HOME|XDG_[A-Z_]+)=' /etc/magpie/
 sudo systemctl restart magpie
 ```
 
-Use `magpie provider add <preset> <key>` the same way for API-key providers. The running service does not load providers or accounts added by the CLI until it restarts.
+Use `magpie provider add <preset> <key>` the same way for API-key providers. The running service does not load providers or accounts added by the CLI until it restarts. Run the CLI from another account or without those variables — a plain root SSH session, say — and it silently writes a separate state directory instead, for root `/root/.config/magpie/`: the management page will not show the added account, and the CLI will not show the service's settings. Repeat the sign-in as the service user and remove the stray directory.
 
 ### Use as a CLIProxyAPI upstream
 

@@ -45,7 +45,7 @@ sudo runuser -u magpie -- env $(sudo grep -E '^(HOME|XDG_[A-Z_]+)=' /etc/magpie/
 sudo systemctl restart magpie
 ```
 
-API key 类供应商用同样方式运行 `magpie provider add <preset> <key>`。CLI 添加的供应商和账号要等服务重启后才会加载。
+API key 类供应商用同样方式运行 `magpie provider add <preset> <key>`。CLI 添加的供应商和账号要等服务重启后才会加载。若从其他账户、或不带上述变量运行 CLI（例如直接的 root SSH 会话），它会静默写入另一份状态目录（root 下为 `/root/.config/magpie/`）：管理页看不到该账号，CLI 也看不到服务的设置。此时应改以服务用户身份重新执行登录，并删除误建的目录。
 
 ### 作为 CLIProxyAPI 的上游
 
