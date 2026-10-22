@@ -2,7 +2,7 @@
 
 > English | [简体中文](README.zh-CN.md)
 
-Install [Magpie](https://github.com/yetone/magpie) on an Ubuntu server with a public IPv4 address, HTTPS, a dedicated service account, and a systemd service. Manage it through an SSH tunnel by default. The two scripts follow the layout of `cliproxyapi-helper`.
+Install [Magpie](https://github.com/yetone/magpie) on an Ubuntu server with a public IPv4 address, HTTPS, a dedicated service account, and a systemd service. Manage it through an SSH tunnel by default. The install and uninstall scripts follow the layout of `cliproxyapi-helper`.
 
 ## Requirements
 
@@ -57,7 +57,7 @@ ssh root@203.0.113.10 'bash -s -- --local-only' < ./install-magpie.sh
 
 This mode needs neither `--ip` nor ports `80`/`443`, requests no certificate, and installs no Certbot. The model API listens only on `127.0.0.1:3425` over plain HTTP; management stays on `127.0.0.1:3430` via the SSH tunnel above. It sets `MAGPIE_TRUST_PROXY=1`, so requests CLIProxyAPI forwards over loopback are served as local ones even when they carry a forwarding header; CLIProxyAPI authenticates its own clients. Any local process can call this loopback API, as with any default Magpie install. `--local-only` cannot be combined with `--ip` or `--enable-remote-management`; running it over a public install returns management to loopback, while the old certificate lineage and its renewal remain until removed with Certbot.
 
-The helper does not edit CLIProxyAPI. After adding providers in Magpie, list its model names on the server with `curl -s http://127.0.0.1:3425/v1/models`, then add an entry in the CLIProxyAPI management page or `config.yaml`. With `config-version: 8`, the group belongs under `api-keys`:
+The installer does not edit CLIProxyAPI. After adding providers in Magpie, use the optional [model sync script](#sync-models-to-cliproxyapi), or list model names on the server with `curl -s http://127.0.0.1:3425/v1/models` and add them in the CLIProxyAPI management page or `config.yaml`. With `config-version: 8`, the group belongs under `api-keys`:
 
 ```yaml
 api-keys:
@@ -71,9 +71,45 @@ api-keys:
           alias: "copilot/gpt-5.5"          # name clients will request
 ```
 
-Older configs without `config-version: 8` put `openai-compatibility` at the top level. To namespace models, write the full name in each `alias` rather than setting `prefix`: CLIProxyAPI still publishes the unprefixed aliases alongside the prefixed ones, and those can collide with models from other upstreams. CLIProxyAPI reloads `config.yaml` automatically.
+Older configs without `config-version: 8` put `openai-compatibility` at the top level. To namespace models, write the full name in each `alias` rather than setting `prefix`: CLIProxyAPI still publishes the unprefixed aliases alongside the prefixed ones, and those can collide with models from other upstreams. After editing, check CLIProxyAPI's `/v1/models`; automatic reload may not detect an atomic file replacement. The sync script explicitly restarts CLIProxyAPI when applying additions.
 
 Magpie accepts any token on loopback, but the initial gateway key attributes usage to a named identity. Clients keep CLIProxyAPI's base URL and API key.
+
+### Sync models to CLIProxyAPI
+
+`sync-magpie-models.py` reads the existing Magpie provider's `base-url`, fetches its live model list, and adds missing mappings. It supports version 8 and legacy configuration layouts. Existing aliases, mappings for models no longer listed upstream, comments, and unrelated configuration remain unchanged. It does not fix stale model names or create a provider: first configure the `magpie` entry above, with `models: []` if empty and without a provider-level `prefix`. Shared YAML model references must be expanded before editing.
+
+Install the sync script's only extra dependency **on the target host**:
+
+```bash
+ssh root@203.0.113.10 'apt-get update && apt-get install -y python3-yaml'
+```
+
+Preview selected model groups, without writing files or restarting services:
+
+```bash
+ssh root@203.0.113.10 'python3 - --prefix qoder/ --prefix opencode-go/' < ./sync-magpie-models.py
+```
+
+Apply the same additions:
+
+```bash
+ssh root@203.0.113.10 'python3 - --prefix qoder/ --prefix opencode-go/ --apply' < ./sync-magpie-models.py
+```
+
+Omit `--prefix` to include all upstream models. Reruns add only missing upstream names and keep existing aliases; when there are no additions, they create no backup and do not restart the service. `--apply` requires root, saves an owner-only `config.yaml.bak-*` beside the configuration, preserves its owner and permissions, restarts CLIProxyAPI, and checks that the previous model names plus the additions are published. Restarting briefly interrupts requests. On restart or verification failure it restores the previous configuration and restarts again; a detected intervening external edit is left intact and reported with the backup path. Run the command while no other tool or person is editing this configuration. The checks run immediately before each file replacement and after verification; they do not provide atomic coordination with arbitrary external writers. Model-list verification does not send inference requests. Keys stay inside the server process and are never printed. HTTPS certificates are verified, and authenticated requests do not follow redirects.
+
+| Option | Default | Purpose |
+|---|---|---|
+| `--config` | `/var/lib/cli-proxy-api/config.yaml` | Existing private CLIProxyAPI YAML configuration |
+| `--provider` | `magpie` | Existing `openai-compatibility` entry to extend |
+| `--prefix` | All models | Include a literal model ID prefix; repeat to select multiple groups |
+| `--api-base-url` | Derived from the configuration | CLIProxyAPI client URL, such as `https://203.0.113.10/v1`; required if the TLS listener address does not match its certificate |
+| `--service` | `cli-proxy-api.service` | systemd service restarted by `--apply` |
+| `--apply` | Off: preview only | Back up, write additions, restart, and verify |
+| `--json` | Off | Print a JSON result; errors remain on stderr |
+
+For a version 8 config, the client key comes from `access.api-keys`; legacy configs use the top-level `api-keys` list. No key needs to appear in the command. Exit codes are `0` for a successful preview, no-op, or verified update, `1` for an operation failure, and `2` for invalid arguments. Inspect the printed backup and restore it privately if manual recovery is needed; do not copy its contents to logs or version control.
 
 ### Connect clients
 
@@ -152,10 +188,17 @@ All modes retain Certbot, its renewal timer, and every certificate under `/etc/l
 
 ## Validation
 
+Create a local test environment with the sync dependency:
+
+```bash
+python3 -m venv /tmp/magpie-helper-venv
+/tmp/magpie-helper-venv/bin/python -m pip install -r requirements.txt
+```
+
 ```bash
 bash -n install-magpie.sh uninstall-magpie.sh
 shellcheck install-magpie.sh uninstall-magpie.sh
-python3 -m unittest discover -s tests -v
+/tmp/magpie-helper-venv/bin/python -m unittest discover -s tests -v
 ```
 
 Tests use temporary directories and replace host operations. They do not install packages, change a real service, or request a public certificate. Production Ubuntu installation and Let's Encrypt issuance require a real target host and remain separate checks.

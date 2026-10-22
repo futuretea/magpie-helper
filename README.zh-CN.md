@@ -57,7 +57,7 @@ ssh root@203.0.113.10 'bash -s -- --local-only' < ./install-magpie.sh
 
 该模式不需要 `--ip`，不占用 `80`/`443`，不申请证书，也不安装 Certbot。模型接口只以 HTTP 监听 `127.0.0.1:3425`；管理页仍在 `127.0.0.1:3430`，按上文通过 SSH 隧道访问。安装器会设置 `MAGPIE_TRUST_PROXY=1`，因此即使 CLIProxyAPI 经本机转发的请求带有转发头，也按本机请求处理；客户端鉴权由 CLIProxyAPI 负责。和 Magpie 默认安装一样，本机任何进程都能调用这个回环接口。`--local-only` 不能与 `--ip` 或 `--enable-remote-management` 同用；在公网模式的安装上改用该模式时，管理页回到仅本机访问，原有证书及其续期保留，需要时自行用 Certbot 删除。
 
-helper 不修改 CLIProxyAPI。在 Magpie 中添加供应商后，于服务器上运行 `curl -s http://127.0.0.1:3425/v1/models` 查看模型名，再在 CLIProxyAPI 管理页或 `config.yaml` 中添加。`config-version: 8` 的配置需放在 `api-keys` 下：
+安装器不修改 CLIProxyAPI。在 Magpie 中添加供应商后，可使用下文的[模型同步脚本](#同步模型到-cliproxyapi)，或于服务器上运行 `curl -s http://127.0.0.1:3425/v1/models` 查看模型名，再在 CLIProxyAPI 管理页或 `config.yaml` 中添加。`config-version: 8` 的配置需放在 `api-keys` 下：
 
 ```yaml
 api-keys:
@@ -71,9 +71,45 @@ api-keys:
           alias: "copilot/gpt-5.5"          # 客户端请求时使用的名称
 ```
 
-没有 `config-version: 8` 的旧配置把 `openai-compatibility` 放在顶层。想给模型加命名前缀时，直接在每个 `alias` 中写完整名称，不要设置 `prefix`：CLIProxyAPI 仍会同时公布不带前缀的别名，可能与其他上游的模型重名。CLIProxyAPI 会自动重新加载 `config.yaml`。
+没有 `config-version: 8` 的旧配置把 `openai-compatibility` 放在顶层。想给模型加命名前缀时，直接在每个 `alias` 中写完整名称，不要设置 `prefix`：CLIProxyAPI 仍会同时公布不带前缀的别名，可能与其他上游的模型重名。修改后应检查 CLIProxyAPI 的 `/v1/models`；原子替换文件可能未被自动重载检测到。同步脚本应用新增项时会显式重启 CLIProxyAPI。
 
 Magpie 在本机回环上接受任意令牌，但使用初始网关密钥可以把用量归到具名身份。客户端继续使用 CLIProxyAPI 原来的地址和 API key。
+
+### 同步模型到 CLIProxyAPI
+
+`sync-magpie-models.py` 从已配置的 Magpie 供应商读取 `base-url`，查询实时模型清单，批量补入缺失映射。支持版本 8 和旧版配置结构。已有别名、上游已不再列出的旧映射、注释和无关配置保留。脚本不修正旧模型名称、不创建供应商：先按上文配置名为 `magpie` 的条目，空列表可写 `models: []`，供应商级别不要设置 `prefix`。共享的 YAML 模型引用需先展开为独立列表。
+
+先在**目标服务器**安装同步脚本唯一的额外依赖：
+
+```bash
+ssh root@203.0.113.10 'apt-get update && apt-get install -y python3-yaml'
+```
+
+预演选定的模型组，不写文件、不重启服务：
+
+```bash
+ssh root@203.0.113.10 'python3 - --prefix qoder/ --prefix opencode-go/' < ./sync-magpie-models.py
+```
+
+确认输出后，应用同样的新增项：
+
+```bash
+ssh root@203.0.113.10 'python3 - --prefix qoder/ --prefix opencode-go/ --apply' < ./sync-magpie-models.py
+```
+
+省略 `--prefix` 会包含所有上游模型。重复执行只补缺失的上游名称、保留已有别名；没有新增项时不创建备份、不重启。`--apply` 需要 root：先在配置旁保存仅所有者可读的 `config.yaml.bak-*`，保留原配置所有者与权限，写入后重启 CLIProxyAPI，再检查旧模型名称和新增项是否均已公布。重启会短暂中断请求。重启或验证失败时恢复旧配置并再次重启；检测到其他程序修改配置时，保留该修改并报告备份路径。运行期间应确保没有其他工具或人员同时编辑此配置。检查发生在每次实际替换前和验证后，不能与任意外部写入者做原子协作。验证模型列表不发送推理请求。密钥只在服务器进程内使用，不打印；HTTPS 校验证书，带认证的请求不跟随跳转。
+
+| 选项 | 默认值 | 用途 |
+|---|---|---|
+| `--config` | `/var/lib/cli-proxy-api/config.yaml` | 已有的私有 CLIProxyAPI YAML 配置 |
+| `--provider` | `magpie` | 要扩展的 `openai-compatibility` 条目 |
+| `--prefix` | 所有模型 | 模型 ID 的字面前缀，可重复传入选择多组 |
+| `--api-base-url` | 从配置推导 | CLIProxyAPI 客户端地址，如 `https://203.0.113.10/v1`；TLS 监听地址与证书不匹配时需要显式指定 |
+| `--service` | `cli-proxy-api.service` | `--apply` 重启的 systemd 服务 |
+| `--apply` | 关闭，仅预演 | 备份、写入、重启并验证 |
+| `--json` | 关闭 | 输出 JSON 结果；错误仍输出到 stderr |
+
+版本 8 的客户端密钥读取自 `access.api-keys`，旧版读取顶层 `api-keys` 列表，无需把密钥写在命令里。退出码：`0` 表示预演成功、无需变更或更新已验证；`1` 表示操作失败；`2` 表示参数错误。需要人工恢复时私下查看输出的备份路径并还原，不要将备份内容复制到日志或版本控制。
 
 ### 连接本地编码工具
 
@@ -154,10 +190,17 @@ ssh root@203.0.113.10 'bash -s -- --yes' < ./uninstall-magpie.sh
 
 ## 本地验证
 
+先创建包含同步依赖的本地测试环境：
+
+```bash
+python3 -m venv /tmp/magpie-helper-venv
+/tmp/magpie-helper-venv/bin/python -m pip install -r requirements.txt
+```
+
 ```bash
 bash -n install-magpie.sh uninstall-magpie.sh
 shellcheck install-magpie.sh uninstall-magpie.sh
-python3 -m unittest discover -s tests -v
+/tmp/magpie-helper-venv/bin/python -m unittest discover -s tests -v
 ```
 
 测试使用临时目录并替换主机操作，不安装软件、不修改真实服务、不申请公网证书。Ubuntu 主机完整安装和 Let's Encrypt 签发需要真实目标环境，应另行验证。
